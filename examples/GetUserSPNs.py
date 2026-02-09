@@ -93,6 +93,21 @@ class GetUserSPNs:
         self.__stealth = cmdLineOptions.stealth
         self.__machineOnly = cmdLineOptions.machine_only
         self.__requestMachine = cmdLineOptions.request_machine
+        self.__etype = cmdLineOptions.etype
+
+        # Build the requested etype list for TGS requests
+        if self.__etype == 'aes256':
+            self.__requestedEtypes = (
+                int(constants.EncryptionTypes.aes256_cts_hmac_sha1_96.value),
+                int(constants.EncryptionTypes.aes128_cts_hmac_sha1_96.value),
+            )
+        elif self.__etype == 'aes128':
+            self.__requestedEtypes = (
+                int(constants.EncryptionTypes.aes128_cts_hmac_sha1_96.value),
+                int(constants.EncryptionTypes.aes256_cts_hmac_sha1_96.value),
+            )
+        else:
+            self.__requestedEtypes = None  # default RC4 behavior
 
         if cmdLineOptions.hashes is not None:
             self.__lmhash, self.__nthash = cmdLineOptions.hashes.split(':')
@@ -128,28 +143,36 @@ class GetUserSPNs:
         # No TGT in cache, request it
         userName = Principal(self.__username, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
 
-        # In order to maximize the probability of getting session tickets with RC4 etype, we will convert the
-        # password to ntlm hashes (that will force to use RC4 for the TGT). If that doesn't work, we use the
-        # cleartext password.
-        # If no clear text password is provided, we just go with the defaults.
-        if self.__password != '' and (self.__lmhash == '' and self.__nthash == ''):
-            try:
-                tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, '', self.__domain,
-                                                                        compute_lmhash(self.__password),
-                                                                        compute_nthash(self.__password), self.__aesKey,
-                                                                        kdcHost=self.__kdcIP)
-            except Exception as e:
-                logging.debug('TGT: %s' % str(e))
-                tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, self.__password, self.__domain,
-                                                                        unhexlify(self.__lmhash),
-                                                                        unhexlify(self.__nthash), self.__aesKey,
-                                                                        kdcHost=self.__kdcIP)
-
-        else:
+        if self.__etype in ('aes128', 'aes256'):
+            # When requesting AES-encrypted service tickets, use the cleartext password for the TGT
+            # so the KDC can issue an AES-encrypted TGT session key (instead of forcing RC4 via NT hash).
             tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, self.__password, self.__domain,
                                                                     unhexlify(self.__lmhash),
                                                                     unhexlify(self.__nthash), self.__aesKey,
                                                                     kdcHost=self.__kdcIP)
+        else:
+            # In order to maximize the probability of getting session tickets with RC4 etype, we will convert the
+            # password to ntlm hashes (that will force to use RC4 for the TGT). If that doesn't work, we use the
+            # cleartext password.
+            # If no clear text password is provided, we just go with the defaults.
+            if self.__password != '' and (self.__lmhash == '' and self.__nthash == ''):
+                try:
+                    tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, '', self.__domain,
+                                                                            compute_lmhash(self.__password),
+                                                                            compute_nthash(self.__password), self.__aesKey,
+                                                                            kdcHost=self.__kdcIP)
+                except Exception as e:
+                    logging.debug('TGT: %s' % str(e))
+                    tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, self.__password, self.__domain,
+                                                                            unhexlify(self.__lmhash),
+                                                                            unhexlify(self.__nthash), self.__aesKey,
+                                                                            kdcHost=self.__kdcIP)
+
+            else:
+                tgt, cipher, oldSessionKey, sessionKey = getKerberosTGT(userName, self.__password, self.__domain,
+                                                                        unhexlify(self.__lmhash),
+                                                                        unhexlify(self.__nthash), self.__aesKey,
+                                                                        kdcHost=self.__kdcIP)
         TGT = {}
         TGT['KDC_REP'] = tgt
         TGT['cipher'] = cipher
@@ -373,7 +396,8 @@ class GetUserSPNs:
                         tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(principalName, self.__domain,
                                                                                 self.__kdcIP,
                                                                                 TGT['KDC_REP'], TGT['cipher'],
-                                                                                TGT['sessionKey'])
+                                                                                TGT['sessionKey'],
+                                                                                requestedEtypes=self.__requestedEtypes)
                         self.outputTGS(tgs, oldSessionKey, sessionKey, sAMAccountName,
                                        self.__targetDomain + "/" + sAMAccountName, fd)
                     except Exception as e:
@@ -432,7 +456,8 @@ class GetUserSPNs:
                     tgs, cipher, oldSessionKey, sessionKey = getKerberosTGS(principalName, self.__domain,
                                                                             self.__kdcIP,
                                                                             TGT['KDC_REP'], TGT['cipher'],
-                                                                            TGT['sessionKey'])
+                                                                            TGT['sessionKey'],
+                                                                            requestedEtypes=self.__requestedEtypes)
                     self.outputTGS(tgs, oldSessionKey, sessionKey, username, username, fd)
                 except Exception as e:
                     logging.debug("Exception:", exc_info=True)
@@ -460,6 +485,10 @@ if __name__ == '__main__':
     parser.add_argument('-machine-only', action='store_true', default=False, help='Queries for machine accounts only, by adjusting `objectCategory=person` to `objectCategory=computer`. Active Directory may limit results to 1,000 objects by default. LDAP paging is required to retrieve more.')
 
     parser.add_argument('-usersfile', help='File with user per line to test')
+    parser.add_argument('-etype', action='store', choices=['rc4', 'aes128', 'aes256'],
+                        help='Preferred encryption type for the requested TGS. '
+                             'Default behavior requests RC4. Use aes128 or aes256 to '
+                             'request AES-encrypted tickets.')
 
     parser.add_argument('-request', action='store_true', default=False, help='Requests TGS for users and output them '
                                                                              'in JtR/hashcat format (default False)')

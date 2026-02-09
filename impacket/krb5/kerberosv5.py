@@ -366,7 +366,7 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
 
     return tgt, cipher, key, sessionKey
 
-def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew = False):
+def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew = False, requestedEtypes = None):
 
     # Decode the TGT
     try:
@@ -442,14 +442,16 @@ def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew =
 
     reqBody['till'] = KerberosTime.to_asn1(now)
     reqBody['nonce'] = rand.getrandbits(31)
-    seq_set_iter(reqBody, 'etype',
-                      (
-                          int(constants.EncryptionTypes.rc4_hmac.value),
-                          int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
-                          int(constants.EncryptionTypes.des_cbc_md5.value),
-                          int(cipher.enctype)
-                       )
-                )
+    if requestedEtypes is not None:
+        etypes = requestedEtypes
+    else:
+        etypes = (
+            int(constants.EncryptionTypes.rc4_hmac.value),
+            int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
+            int(constants.EncryptionTypes.des_cbc_md5.value),
+            int(cipher.enctype)
+        )
+    seq_set_iter(reqBody, 'etype', etypes)
 
     message = encoder.encode(tgsReq)
 
@@ -483,7 +485,7 @@ def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew =
     else:
         # Let's extract the Ticket, change the domain and keep asking
         domain = spn.components[1]
-        return getKerberosTGS(serverName, domain, kdcHost, r, cipher, newSessionKey)
+        return getKerberosTGS(serverName, domain, kdcHost, r, cipher, newSessionKey, requestedEtypes=requestedEtypes)
 
 ################################################################################
 # DCE RPC Helpers
